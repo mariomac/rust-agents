@@ -7,10 +7,16 @@
 //      - node function signatures
 //      - any node left unconnected
 
-pub use paste::paste;
-
 #[macro_export]
 macro_rules! graph {
+    (@chain_connections $connect_src:ident -> $connect_dst:ident $(-> $rest:ident)+) => {
+        graph!(@chain_connections $connect_src -> $connect_dst);
+        graph!(@chain_connections $connect_dst $(-> $rest)+);
+    };
+    (@chain_connections $connect_src:ident -> $connect_dst:ident) => {
+        $connect_src.out = Some($connect_dst.sender.clone());
+    };
+
     {
         extract {
             $($enode_name:ident : $enode_func:path,)*
@@ -21,47 +27,75 @@ macro_rules! graph {
         load {
             $($lnode_name:ident : $lnode_func:path,)*
         }
-        $($connect_src:ident -> $connect_dst:path,)*
+        $($connect_src:ident $(-> $connect_rest:ident)+ ,)*
     } => {
-        fn check_enode_signature<T: Send + 'static>(
-            _f: impl Fn(CancellationToken, tokio::sync::mpsc::Sender<T>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-        ) {}
 
-        $(
-            const _: fn() = || {
-                // This will fail to compile if $enode_func doesn't match the expected signature
-                check_enode_signature(|ct, out| Box::pin($enode_func(ct, out)));
-            };
-        )*
-        // TODO: validate tnode and lnode signatures
-
-        ::paste::paste! {
-            // create input channels for transform nodes
-            $(
-            let ([<$tnode_name _tx>], [<$tnode_name _rx>]) = tokio::sync::mpsc::channel(100);
-            )*
-            // create input channels for load nodes
-            $(
-            let ([<$lnode_name _tx>], [<$lnode_name _rx>]) = tokio::sync::mpsc::channel(100);
-            )*
-            // decide the output channel for each extract and transform node
-            $(
-            let [<$connect_src _outch>] = [<$connect_dst _tx>].clone();
-            )*
-
-            let ct = CancellationToken::new();
-            tokio::join!(
-            $(
-                $enode_func(ct.clone(), [<$enode_name _outch>].clone()),
-            )*
-            $(
-                $tnode_func(ct.clone(), [<$tnode_name _rx>], [<$tnode_name _outch>].clone()),
-            )*
-            $(
-                $lnode_func(ct.clone(), [<$lnode_name _rx>]),
-            )*
-            );
+        struct Extractor<T: Send + 'static> {
+            // TODO: check if there is a nicer way to define async function references
+            func: fn(tokio_util::sync::CancellationToken, tokio::sync::mpsc::Sender<T>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+            out: Option<tokio::sync::mpsc::Sender<T>>,
         }
 
+        struct Transformer<IT: Send + 'static, OT: Send + 'static> {
+            func: fn(tokio_util::sync::CancellationToken, tokio::sync::mpsc::Receiver<IT>, tokio::sync::mpsc::Sender<OT>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+
+            // the channel used to receive messages, and the sender that other nodes would use as out sender
+            receiver: tokio::sync::mpsc::Receiver<IT>,
+            sender: tokio::sync::mpsc::Sender<IT>,
+
+            // the sender reference to other nodes, used to send stuff
+            out : Option<tokio::sync::mpsc::Sender<OT>>,
+        }
+
+        struct Loader<T: Send + 'static> {
+            func: fn(tokio_util::sync::CancellationToken, tokio::sync::mpsc::Receiver<T>) -> std::pin::Pin<Box<dyn std::future::Future<Output=()> + Send>>,
+            receiver: tokio::sync::mpsc::Receiver<T>,
+            sender: tokio::sync::mpsc::Sender<T>,
+        }
+
+        // instantiate extractors, transformers, and loaders
+        $(
+            let mut $enode_name = Extractor {
+                // TODO: check if there is a nicer way to refer to this
+                func: |ct, tx| Box::pin($enode_func(ct, tx)),
+                out: None,
+            };
+        )*
+        $(
+            let (s, r) = tokio::sync::mpsc::channel(10);
+            let mut $tnode_name = Transformer {
+                // TODO: check if there is a nicer way to refer to this
+                func: |ct, rx, tx| Box::pin($tnode_func(ct, rx, tx)),
+                receiver: r, sender: s, out: None,
+            };
+        )*
+        $(
+            let (s, r) = tokio::sync::mpsc::channel(10);
+            let $lnode_name = Loader {
+                // TODO: check if there is a nicer way to refer to this
+                func: |ct, tx| Box::pin($lnode_func(ct, tx)),
+                receiver: r, sender: s,
+            };
+        )*
+
+        // decide the out channel for each node in the connection graph
+        $(
+            graph!(@chain_connections $connect_src $(-> $connect_rest)+);
+        )*
+
+        let ct = tokio_util::sync::CancellationToken::new();
+
+        tokio::join!(
+        $(
+            // TODO: replace unwrap with proper error handling
+            ($enode_name.func)(ct.clone(), $enode_name.out.unwrap()),
+        )*
+        $(
+            ($tnode_name.func)(ct.clone(), $tnode_name.receiver, $tnode_name.out.unwrap()),
+        )*
+        $(
+            ($lnode_name.func)(ct.clone(), $lnode_name.receiver),
+        )*
+        );
     };
 }
