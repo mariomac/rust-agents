@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 pub async fn proc_renamer(
     ct: CancellationToken,
     mut input: tokio::sync::mpsc::Receiver<Vec<Process>>,
-    mut output: tokio::sync::mpsc::Sender<Vec<Process>>,
+    output: tokio::sync::mpsc::Sender<Vec<Process>>,
 ) {
     loop {
         tokio::select!(
