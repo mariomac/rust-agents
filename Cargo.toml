@@ -12,4 +12,5 @@ opentelemetry_sdk = "0.31.0"
 opentelemetry = "0.31.0"
 opentelemetry-otlp = { version= "0.31.0" }
 opentelemetry-stdout = { version = "0.31.0", features = ["metrics"] }
+paste = "1.0.15"
 
