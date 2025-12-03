@@ -1,1 +1,1 @@
-pub mod otel;
+pub mod prom;

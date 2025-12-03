@@ -1,15 +1,14 @@
-use opentelemetry::KeyValue;
 
 pub struct Resource {
     pub instance: String,
-    pub attrs: Vec<KeyValue>,
+    pub attrs: Vec<(String, String)>,
     pub metrics: Vec<Counter>,
 }
 
 // TODO: support other metrics
 pub struct Counter {
     pub name: String,
-    pub attrs: Vec<KeyValue>,
+    pub attrs: Vec<(String, String)>,
     pub value: u64,
 }
 

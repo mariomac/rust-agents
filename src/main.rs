@@ -1,4 +1,3 @@
-use crate::tracers::proc::Process;
 
 mod export;
 mod graph;
@@ -15,10 +14,10 @@ async fn main() {
             // proc_renamer: transform::proc_renamer,
         }
         load {
-            otel_export: export::otel::exporter,
+            export: export::prom::metrics_exporter,
         }
 
-        procs -> otel_export,
+        procs -> export,
         // procs -> proc_renamer -> otel_export,
     };
 }

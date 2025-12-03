@@ -1,13 +1,15 @@
+use crate::tracers::datapoint::Resource;
+use rouille::router;
+use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::Path;
 use std::time::Duration;
-use opentelemetry::KeyValue;
-use sysinfo::{CpuRefreshKind, System};
+use sysinfo::System;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
-use crate::tracers::datapoint::{Counter, Resource};
+use crate::tracers::datapoint;
 
 pub async fn trace_processes(ct: CancellationToken, out: tokio::sync::mpsc::Sender<Vec<Resource>>) {
+
     let mut sys = System::new_all();
     loop {
         tokio::select!(
@@ -15,23 +17,24 @@ pub async fn trace_processes(ct: CancellationToken, out: tokio::sync::mpsc::Send
                 println!("process tracer cancelled");
                 return
             },
-            _ = sleep(Duration::from_secs(5)) => {},
+            _ = sleep(Duration::from_secs(5)) => {
+                // TODO: this is slow. Cache basic resources
+                // TODO: support removal of processes
+                sys.refresh_all();
+                let procs = sys.processes();
+                if let Err(e) = out
+                    .send(
+                        procs
+                            .iter()
+                            .map(proc_to_resource)
+                            .collect(),
+                    )
+                    .await
+                {
+                    println!("error sending: {:?}", e);
+                }
+            },
         );
-        // TODO: this is slow. Cache basic resources
-        // TODO: support removal of processes
-        sys.refresh_all();
-        let procs = sys.processes();
-        if let Err(e) = out
-            .send(
-                procs
-                    .iter()
-                    .map(proc_to_resource)
-                    .collect(),
-            )
-            .await
-        {
-            println!("error sending: {:?}", e);
-        }
     }
 }
 
@@ -40,13 +43,13 @@ fn proc_to_resource(p: (&sysinfo::Pid, &sysinfo::Process)) -> Resource {
     let hn = hostname::get().unwrap_or(OsString::from("unknown"));
     let mut res = Resource::new(format!("{}:{}", hn.to_string_lossy(), proc.pid()));
     res.attrs = vec![
-        KeyValue::new("process.pid", proc.pid().as_u32() as i64),
-        KeyValue::new("process.executable.path", proc.exe().unwrap().to_string_lossy().into_owned()),
+        ("process.pid".to_string(), proc.pid().to_string()),
+        ("process.executable.path".to_string(), proc.exe().unwrap().to_string_lossy().into_owned()),
     ];
     res.metrics = vec![
-        Counter {
+        datapoint::Counter {
             name: "process.cpu.time".to_string(),
-            attrs: vec![KeyValue::new("cpu.mode", "total")],
+            attrs: vec![("cpu.mode".to_string(), "total".to_string())],
             value: proc.accumulated_cpu_time(),
         }
     ];
