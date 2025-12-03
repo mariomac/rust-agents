@@ -37,6 +37,7 @@ name = "async-tests"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "hostname",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-stdout",
@@ -263,6 +264,17 @@ name = "gimli"
 version = "0.32.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
+
+[[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link 0.2.0",
+]
 
 [[package]]
 name = "http"

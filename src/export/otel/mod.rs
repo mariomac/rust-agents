@@ -2,17 +2,18 @@ use crate::tracers::proc::Process;
 use futures::SinkExt;
 use opentelemetry::KeyValue;
 use opentelemetry::global::ObjectSafeTracer;
-use opentelemetry::metrics::MeterProvider;
+use opentelemetry::metrics::{Counter, Meter, MeterProvider};
 use opentelemetry_otlp::{
     HttpExporterBuilder, MetricExporter, Protocol, WithExportConfig, WithHttpConfig,
 };
-use opentelemetry_sdk::Resource;
-use opentelemetry_sdk::metrics::SdkMeterProvider;
+use opentelemetry_sdk::metrics::{MeterProviderBuilder, SdkMeterProvider};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use opentelemetry_sdk::Resource;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, error};
+use crate::tracers::datapoint;
 
 fn init_tracing_subscriber() {
     // Initialize tracing subscriber to capture logs from both your app and OpenTelemetry internals
@@ -36,34 +37,11 @@ fn init_tracing_subscriber() {
         .init();
 }
 
-fn init_otel_resource() -> opentelemetry_sdk::Resource {
-    debug!("Initializing OTEL resource");
-    let otlp_resource_detected = opentelemetry_sdk::Resource::builder()
-        .with_detector(Box::new(
-            opentelemetry_sdk::resource::SdkProvidedResourceDetector,
-        ))
-        .with_detector(Box::new(
-            opentelemetry_sdk::resource::EnvResourceDetector::new(),
-        ))
-        .with_detector(Box::new(
-            opentelemetry_sdk::resource::TelemetryResourceDetector,
-        ))
-        .with_service_name("rust-agents-test");
-
-    let resource = otlp_resource_detected.build();
-    debug!("OTEL resource initialized with {} attributes", resource.len());
-    trace!("Resource attributes: {:?}", resource);
-    resource
-}
-
-// ************************************ METRICS ************************************
-fn init_metrics(
-    // config: &Config,
-    resource: opentelemetry_sdk::Resource,
-) -> opentelemetry_sdk::metrics::SdkMeterProvider {
+fn init_meter_provider_builder() -> MeterProviderBuilder{
     debug!("Initializing metrics exporter");
+
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:4318".to_string());
+        .unwrap_or_else(|_| "http://localhost:4318/v1/metrics".to_string());
     let headers = std::env::var("OTEL_EXPORTER_OTLP_HEADERS")
         .map(|h| parse_headers(&h))
         .unwrap_or_default();
@@ -74,27 +52,60 @@ fn init_metrics(
     debug!("OTEL_EXPORTER_OTLP_HEADERS: {:?}", headers);
 
     let mut meter_provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder();
-        debug!("Building OTLP HTTP exporter with protocol: HttpBinary");
-        let otlp_exporter = opentelemetry_otlp::MetricExporter::builder()
-            .with_http()
-            .with_endpoint(&endpoint)
-            .with_headers(headers)
-            .with_protocol(Protocol::HttpBinary)
-            // .with_tonic()
-            .build()
-            .expect("Failed to build OTLP exporter");
+    debug!("Building OTLP HTTP exporter with protocol: HttpBinary");
+    let otlp_exporter = opentelemetry_otlp::MetricExporter::builder()
+        .with_http()
+        .with_endpoint(&endpoint)
+        .with_headers(headers)
+        .with_protocol(Protocol::HttpBinary)
+        // .with_tonic()
+        .build()
+        .expect("Failed to build OTLP exporter");
 
-        debug!("Creating PeriodicReader with 10s interval");
-        let otlp_reader = opentelemetry_sdk::metrics::PeriodicReader::builder(otlp_exporter)
-            .with_interval(Duration::from_secs(10))
-            .build();
+    debug!("Creating PeriodicReader with 10s interval");
+    let otlp_reader = opentelemetry_sdk::metrics::PeriodicReader::builder(otlp_exporter)
+        .with_interval(Duration::from_secs(10))
+        .build();
 
-        meter_provider_builder = meter_provider_builder.with_reader(otlp_reader);
+    meter_provider_builder.with_reader(otlp_reader)
+}
 
-    debug!("Building meter provider");
+// ************************************ METRICS ************************************
+fn init_resource(
+    meter_provider_builder: &MeterProviderBuilder,
+    resource: &datapoint::Resource,
+) -> OtelResMetrics {
+    debug!("Building meter provider for resource: {:?}", &resource.instance);
+
+        debug!("Initializing OTEL resource");
+    let otlp_resource_detected = opentelemetry_sdk::Resource::builder()
+        .with_detector(Box::new(
+            opentelemetry_sdk::resource::SdkProvidedResourceDetector,
+        ))
+        .with_detector(Box::new(
+            opentelemetry_sdk::resource::EnvResourceDetector::new(),
+        ))
+        .with_detector(Box::new(
+            opentelemetry_sdk::resource::TelemetryResourceDetector,
+        ))
+        .with_attribute(KeyValue::new("service_instance_id", resource.instance.clone()))
+        // .with_attribute(KeyValue::new("instance", instance))
+        .with_service_name("rust-agents-test");
+
+    let resource = otlp_resource_detected.build();
+
     let meter_provider = meter_provider_builder.with_resource(resource).build();
-    info!("Metrics exporter initialized successfully");
-    meter_provider
+    let meter = meter_provider.meter("metric_exporter");
+
+    // TODO: observable counter to remove process metrics when they are no longer needed
+    let proc_cpu_time = meter.u64_counter("process.cpu.time").build();
+
+    OtelResMetrics {
+        meter,
+        counters: HashMap::from(
+            [(String::from("process.cpu.time"), proc_cpu_time)]
+        )
+    }
 }
 
 fn parse_headers(header_str: &str) -> HashMap<String, String> {
@@ -110,8 +121,12 @@ fn parse_headers(header_str: &str) -> HashMap<String, String> {
         .collect()
 }
 
+struct OtelResMetrics {
+    meter: Meter,
+    counters: HashMap<String, Counter<u64>>,
+}
 
-pub async fn exporter(ct: CancellationToken, mut input: tokio::sync::mpsc::Receiver<Vec<Process>>) {
+pub async fn exporter(ct: CancellationToken, mut input: tokio::sync::mpsc::Receiver<Vec<datapoint::Resource>>) {
     info!("Starting OTEL metrics exporter");
     init_tracing_subscriber();
 
@@ -120,13 +135,8 @@ pub async fn exporter(ct: CancellationToken, mut input: tokio::sync::mpsc::Recei
         .filter(|(key, _)| key.starts_with("OTEL_"))
         .for_each(|(key, value)| debug!("  {} = {}", key, value));
 
-    let resource = init_otel_resource();
-    let provider = init_metrics(resource);
+    let mut resources = HashMap::new();
 
-    let meter = provider.meter("metric_exporter");
-
-    // TODO: observable counter to remove process metrics when they are no longer needed
-    let proc_cpu_time = meter.u64_counter("process.cpu.time").build();
     debug!("Created process.cpu.time counter");
 
     let mut batch_count = 0u64;
@@ -146,17 +156,17 @@ pub async fn exporter(ct: CancellationToken, mut input: tokio::sync::mpsc::Recei
                 batch_count += 1;
                 debug!("Received batch #{} with {} processes", batch_count, metrics.len());
 
-                metrics.iter().take(3).for_each(|proc| {
-                    trace!("Recording metric for PID {} ({}): cpu_time={}",
-                        proc.pid, proc.exe, proc.cpu_time);
-
-                    proc_cpu_time.add(metrics.len() as u64, &[
-                        // this IS NOT compliant with the OTEL standard, as the following attributes
-                        // are resource attributes, not metric attributes
-                        KeyValue::new("process.pid", proc.pid.to_string()),
-                        KeyValue::new("process.executable.path", proc.exe.to_string()),
-                        KeyValue::new("process.cpu.time", proc.cpu_time.to_string())
-                    ]);
+                metrics.iter().for_each(|res| {
+                    match resources.get_mut(&res.instance) {
+                        Some(r) => {
+                            r.me
+                        }
+                        None => {
+                            resources.insert(res.instance.clone(),
+                                init_otel_resource(res.instance.clone())
+                            );
+                        }
+                    }
                 });
             },
         )
