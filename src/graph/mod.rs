@@ -6,6 +6,8 @@
 //      - load nodes aren't used as senders
 //      - node function signatures
 //      - any node left unconnected
+// TODO: allow optional nodes and bypassing channels
+// TODO: allow broadcasting output
 
 #[macro_export]
 macro_rules! graph {

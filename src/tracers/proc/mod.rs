@@ -1,11 +1,13 @@
+use std::path::Path;
 use std::time::Duration;
-use sysinfo::System;
+use sysinfo::{CpuRefreshKind, System};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 pub struct Process {
     pub pid: u32,
-    pub name: String,
+    pub exe: String,
+    pub cpu_time: u64,
 }
 
 pub async fn trace_processes(ct: CancellationToken, out: tokio::sync::mpsc::Sender<Vec<Process>>) {
@@ -18,6 +20,7 @@ pub async fn trace_processes(ct: CancellationToken, out: tokio::sync::mpsc::Send
             },
             _ = sleep(Duration::from_secs(5)) => {},
         );
+        // TODO: this is slow
         sys.refresh_all();
         let procs = sys.processes();
         if let Err(e) = out
@@ -26,7 +29,10 @@ pub async fn trace_processes(ct: CancellationToken, out: tokio::sync::mpsc::Send
                     .iter()
                     .map(|(_, proc)| Process {
                         pid: proc.pid().as_u32(),
-                        name: proc.name().to_os_string().into_string().unwrap_or_default(),
+                        exe: proc
+                            .exe()
+                            .map_or_else(String::new, |path| path.to_string_lossy().into_owned()),
+                        cpu_time: proc.accumulated_cpu_time(),
                     })
                     .collect(),
             )

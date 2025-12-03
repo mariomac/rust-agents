@@ -14,7 +14,7 @@ pub async fn proc_renamer(
             }
             Some(mut procs) = input.recv() => {
                 for proc in &mut procs {
-                    proc.name = format!("modify-{}", proc.name);
+                    proc.exe = format!("modify-{}", proc.exe);
                 }
                 if let Err(e) = output.send(procs).await {
                     println!("error sending: {:?}", e);
